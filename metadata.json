@@ -1,0 +1,6 @@
+{
+  "name": "Aniimage",
+  "description": "Scrape and download all images from any website with custom sequential naming.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
