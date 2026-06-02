@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { 
   Download, 
   Trash2, 
@@ -16,17 +16,7 @@ import {
   Check,
   X,
   ExternalLink,
-  Search,
-  Grid,
-  Eye,
-  Sliders,
-  Sparkles,
-  RefreshCw,
-  HelpCircle,
-  FileDown,
-  Layers,
-  ChevronRight,
-  Info
+  Github
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { saveAs } from 'file-saver';
@@ -38,41 +28,18 @@ interface ScrapedImage {
   sourceUrl: string;
   selected: boolean;
   name?: string;
-  width?: number;
-  height?: number;
 }
 
 export default function App() {
-  // Navigation & Control State
   const [links, setLinks] = useState<string[]>(['']);
-  const [bulkInput, setBulkInput] = useState<string>('');
-  const [inputMode, setInputMode] = useState<'structured' | 'bulk'>('structured');
-  
-  // Library State
   const [images, setImages] = useState<ScrapedImage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [baseFileName, setBaseFileName] = useState('aniimage');
+  const [baseFileName, setBaseFileName] = useState('image');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  
-  // Advanced UX Filter & Layout State
-  const [searchQuery, setSearchQuery] = useState('');
-  const [gridSize, setGridSize] = useState<'sm' | 'md' | 'lg'>('md');
-  const [hideTinyImages, setHideTinyImages] = useState(true);
-  const [rangeStart, setRangeStart] = useState<number>(1);
-  const [rangeEnd, setRangeEnd] = useState<number>(10);
-  const [selectedPreviewImage, setSelectedPreviewImage] = useState<ScrapedImage | null>(null);
-
-  // Auto scroll down to images when they load
-  const libraryRef = useRef<HTMLDivElement>(null);
-
-  // Sync rangeEnd with images length
-  useEffect(() => {
-    if (images.length > 0) {
-      setRangeEnd(images.length);
-    }
-  }, [images.length]);
+  const [downloadStates, setDownloadStates] = useState<{ [key: string]: 'idle' | 'fetching' | 'saving' | 'success' | 'failed' }>({});
+  const [downloadDelay, setDownloadDelay] = useState<number>(1500); // Jeda unduhan bawaan 1.5 detik agar berurutan lancar di browser
 
   const handleAddLink = () => {
     setLinks([...links, '']);
@@ -96,20 +63,11 @@ export default function App() {
     setError(null);
     setSuccess(null);
     
-    // Resolve links based on current mode
-    let targetLinks: string[] = [];
-    if (inputMode === 'structured') {
-      targetLinks = links.filter(l => l.trim().startsWith('http'));
-    } else {
-      // Parse bulk text area splitting by newline, commas, or spaces
-      targetLinks = bulkInput
-        .split(/[\n,;]+/)
-        .map(l => l.trim())
-        .filter(l => l.startsWith('http'));
-    }
+    // Filter out empty links
+    const validLinks = links.filter(l => l.trim().startsWith('http'));
     
-    if (targetLinks.length === 0) {
-      setError('Harap masukkan setidaknya satu tautan website aktif yang valid (dimulai dengan http:// atau https://)');
+    if (validLinks.length === 0) {
+      setError('Please enter at least one valid website link (starting with http:// or https://)');
       setIsLoading(false);
       return;
     }
@@ -117,7 +75,7 @@ export default function App() {
     let allScrapedImages: ScrapedImage[] = [];
 
     try {
-      for (const link of targetLinks) {
+      for (const link of validLinks) {
         const response = await fetch('/api/scrape', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -130,14 +88,15 @@ export default function App() {
             const data = await response.json();
             errorMessage = data.error || errorMessage;
           } catch (e) {
-            errorMessage = `Server Error (${response.status}): ${response.statusText || 'Halaman tidak ditemukan atau server mengalami masalah'}`;
+            // Jika bukan JSON (misal HTML error page), ambil status text
+            errorMessage = `Server Error (${response.status}): ${response.statusText || 'Halaman tidak ditemukan atau server bermasalah'}`;
           }
           throw new Error(errorMessage);
         }
 
         const data = await response.json();
         const newImages: ScrapedImage[] = data.images.map((imgUrl: string, idx: number) => ({
-          id: `${link}-${idx}-${Math.random().toString(36).substring(2, 11)}`,
+          id: `${link}-${idx}-${Math.random().toString(36).substr(2, 9)}`,
           url: imgUrl,
           sourceUrl: link,
           selected: true
@@ -147,28 +106,13 @@ export default function App() {
       }
 
       if (allScrapedImages.length === 0) {
-        setError('Tidak ditemukan gambar pada tautan yang diberikan. Silakan periksa kembali tautannya.');
+        setError('No images found on the provided links.');
       } else {
-        setImages(prev => {
-          const combined = [...prev, ...allScrapedImages];
-          // Simple deduplication based on image source url
-          const seen = new Set();
-          return combined.filter(item => {
-            const duplicate = seen.has(item.url);
-            seen.add(item.url);
-            return !duplicate;
-          });
-        });
-        
-        setSuccess(`Berhasil memuat ${allScrapedImages.length} gambar baru!`);
-        
-        // Soft animation scroll to library
-        setTimeout(() => {
-          libraryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 150);
+        setImages(prev => [...prev, ...allScrapedImages]);
+        setSuccess(`Successfully found ${allScrapedImages.length} images!`);
       }
     } catch (err: any) {
-      setError(err.message || 'Terjadi kesalahan saat memuat gambar.');
+      setError(err.message);
     } finally {
       setIsLoading(false);
     }
@@ -188,62 +132,31 @@ export default function App() {
     setImages(images.map(img => ({ ...img, selected: false })));
   };
 
-  const applyRangeSelection = (select: boolean) => {
-    const start = Math.max(1, rangeStart) - 1;
-    const end = Math.min(images.length, rangeEnd);
-    
-    setImages(images.map((img, idx) => {
-      if (idx >= start && idx < end) {
-        return { ...img, selected: select };
-      }
-      return img;
-    }));
-    
-    setSuccess(`Berhasil ${select ? 'memilih' : 'membatalkan pilihan'} gambar dari indeks urutan ${rangeStart} sampai ${end}.`);
-  };
-
   const clearAll = () => {
     setImages([]);
     setSuccess(null);
     setError(null);
+    setDownloadStates({});
   };
-
-  // Callback to update image metadata when fully loaded in browser
-  const handleImageLoad = (id: string, e: React.SyntheticEvent<HTMLImageElement>) => {
-    const imgElement = e.currentTarget;
-    setImages(prev => prev.map(img => 
-      img.id === id 
-        ? { ...img, width: imgElement.naturalWidth, height: imgElement.naturalHeight } 
-        : img
-    ));
-  };
-
-  // Filtering condition
-  const filteredImages = images.filter(img => {
-    // Search query filter
-    const matchesSearch = searchQuery 
-      ? img.url.toLowerCase().includes(searchQuery.toLowerCase()) || img.sourceUrl.toLowerCase().includes(searchQuery.toLowerCase())
-      : true;
-    
-    // Hide tiny images filter
-    const matchesSize = hideTinyImages && img.width && img.height
-      ? img.width > 60 && img.height > 60
-      : true;
-
-    return matchesSearch && matchesSize;
-  });
 
   const downloadAll = async () => {
-    const selectedImages = filteredImages.filter(img => img.selected);
+    const selectedImages = images.filter(img => img.selected);
     
     if (selectedImages.length === 0) {
-      setError('Pilih minimal satu gambar dari galeri untuk mulai mendownload.');
+      setError('Silakan pilih minimal satu gambar untuk diunduh.');
       return;
     }
 
     setDownloading(true);
     setError(null);
-    setSuccess(`Mengunduh ${selectedImages.length} gambar berkualitas tinggi...`);
+    setSuccess(`Memulai pengunduhan ${selectedImages.length} gambar secara berurutan...`);
+
+    // Inisialisasi status unduhan untuk melacak proses satu per satu
+    const initialStates: { [key: string]: 'idle' | 'fetching' | 'saving' | 'success' | 'failed' } = {};
+    selectedImages.forEach(img => {
+      initialStates[img.id] = 'idle';
+    });
+    setDownloadStates(initialStates);
 
     let downloadedCount = 0;
     let failedCount = 0;
@@ -251,6 +164,10 @@ export default function App() {
     try {
       for (let i = 0; i < selectedImages.length; i++) {
         const img = selectedImages[i];
+        
+        // Atur status gambar saat ini menjadi 'fetching' (sedang mengambil data)
+        setDownloadStates(prev => ({ ...prev, [img.id]: 'fetching' }));
+        
         try {
           const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(img.url)}&referer=${encodeURIComponent(img.sourceUrl)}`;
           const response = await fetch(proxyUrl);
@@ -260,6 +177,9 @@ export default function App() {
           }
           
           const blob = await response.blob();
+          
+          // Atur status menjadi 'saving' setelah data berhasil didownload penuh ke memori
+          setDownloadStates(prev => ({ ...prev, [img.id]: 'saving' }));
           
           const contentType = response.headers.get('Content-Type');
           let ext = 'jpg';
@@ -274,706 +194,368 @@ export default function App() {
           const paddedIndex = (i + 1).toString().padStart(3, '0');
           const fileName = `${baseFileName}_${paddedIndex}.${ext}`;
           
+          // Trigger download browser
           saveAs(blob, fileName);
           downloadedCount++;
+          
+          // Set status menjadi 'success'
+          setDownloadStates(prev => ({ ...prev, [img.id]: 'success' }));
         } catch (err) {
-          console.error(`Error downloading ${img.url}:`, err);
+          console.error(`Gagal mendownload ${img.url}:`, err);
           failedCount++;
+          // Set status menjadi 'failed'
+          setDownloadStates(prev => ({ ...prev, [img.id]: 'failed' }));
         }
 
-        // Live progress reporting
-        setSuccess(`Mendownload: ${downloadedCount}/${selectedImages.length} file gambar terunduh...`);
+        // Tampilkan progress real-time ke pengguna sesuai urutan file
+        setSuccess(`Mendownload: ${downloadedCount}/${selectedImages.length} selesai (${failedCount} gagal)...`);
         
-        // Soft pause spacing prevents parallel chrome protection blocks
-        await new Promise(resolve => setTimeout(resolve, 150));
+        // Berikan jeda waktu antar file agar browser sempat memproses penyimpanan file sebelumnya
+        // dan menghindari penumpukan atau urutan acak karena antrean browser.
+        await new Promise(resolve => setTimeout(resolve, downloadDelay));
       }
 
       if (downloadedCount > 0) {
         confetti({
-          particleCount: 160,
-          spread: 80,
-          origin: { y: 0.5 }
+          particleCount: 150,
+          spread: 70,
+          origin: { y: 0.6 }
         });
         
-        setSuccess(`Selesai! Berhasil mengunduh ${downloadedCount} gambar bertitel sekuensial! ${failedCount > 0 ? `(${failedCount} file dilewati akibat proteksi server asal)` : ''}`);
+        setSuccess(`Berhasil mengunduh ${downloadedCount} gambar secara berurutan! ${failedCount > 0 ? `(${failedCount} gagal)` : ''}`);
       } else {
-        setError('Gagal mendownload gambar. Tautan mungkin telah kedaluwarsa atau memblokir akses server.');
+        setError('Gagal mengunduh semua gambar. Website tujuan kemungkinan memblokir akses.');
       }
     } catch (err: any) {
-      setError(`Kesalahan tidak terduga pada download: ${err.message}`);
+      setError(`Pengunduhan gagal: ${err.message}`);
     } finally {
       setDownloading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col selection:bg-indigo-500/30 selection:text-indigo-200">
-      {/* Absolute top glowing ambient light circles */}
-      <div className="absolute top-0 left-1/4 w-96 h-96 bg-indigo-600/10 rounded-full filter blur-[120px] pointer-events-none" />
-      <div className="absolute top-0 right-1/4 w-96 h-96 bg-violet-600/10 rounded-full filter blur-[120px] pointer-events-none" />
-
-      {/* Modern High-End Top Navigation Panel */}
-      <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-4 md:px-8 py-4">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
-          
-          {/* Stunning Brand / Logo Alignment */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 shadow-md shadow-indigo-900/30">
-              <Download className="text-white animate-pulse" size={20} strokeWidth={2.5} />
-              <div className="absolute -inset-0.5 bg-gradient-to-tr from-indigo-500 to-violet-500 rounded-xl blur-sm opacity-30 -z-10" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-display text-xl font-bold tracking-tight text-white">
-                  aniimage
-                </span>
-                <span className="font-display text-xl font-light tracking-tight text-indigo-400">
-                  downloader
-                </span>
-                <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-slate-800 text-indigo-300 border border-slate-700/50">
-                  v2.0
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 font-medium">Extract, batch sequence, and easily filter website asset collections</p>
-            </div>
-          </div>
-
-          {/* Quick Utility Menu Indicator (No tracking or telemetry logs) */}
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-            <span className="w-1.5 h-1.5 bg-green-500 rounded-full ring-4 ring-green-500/20" />
-            <span>Ready Collector State</span>
-          </div>
-
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col p-4 md:p-8">
+      {/* Header */}
+      <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-800 flex items-center gap-2">
+            <Download className="text-indigo-600" size={24} />
+            BulkImage.io
+          </h1>
+          <p className="text-sm text-slate-500">Extract and sequence images from any URL</p>
         </div>
       </header>
 
-      {/* Main Container Core Grid */}
-      <main className="max-w-7xl w-full mx-auto px-4 md:px-8 py-8 flex-1 flex flex-col lg:flex-row gap-8">
-        
-        {/* Left Side: Control Inputs Board & Bulk Configurations */}
-        <aside className="w-full lg:w-96 shrink-0 flex flex-col gap-6">
-          
-          {/* Card: URL Scraper Inputs */}
-          <div className="glass-panel p-6 rounded-2xl border border-slate-900/60 shadow-xl space-y-5">
-            
-            <div className="flex items-center justify-between border-b border-slate-900 pb-3">
-              <div className="flex items-center gap-2.5">
-                <Globe className="text-indigo-400" size={18} />
-                <h2 className="font-display text-sm font-bold tracking-wide uppercase text-slate-200">
-                  Tautan Website
-                </h2>
-              </div>
-              
-              {/* Dual Import Selection Tabs */}
-              <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setInputMode('structured')}
-                  className={`text-[10px] px-2 py-1 rounded-md font-bold transition-all ${
-                    inputMode === 'structured' 
-                      ? 'bg-indigo-600 text-white shadow-sm' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Kolom
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setInputMode('bulk')}
-                  className={`text-[10px] px-2 py-1 rounded-md font-bold transition-all ${
-                    inputMode === 'bulk' 
-                      ? 'bg-indigo-600 text-white shadow-sm' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Bulk Paste
-                </button>
-              </div>
-            </div>
-
-            {/* Input Switch Body */}
-            {inputMode === 'structured' ? (
-              <div className="space-y-2.5 max-h-[260px] overflow-y-auto pr-1">
-                {links.map((link, index) => (
-                  <div key={index} className="flex gap-2 group">
-                    <div className="relative flex-1">
-                      <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-slate-500">
-                        <ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />
-                      </div>
-                      <input
-                        type="url"
-                        value={link}
-                        onChange={(e) => handleLinkChange(index, e.target.value)}
-                        placeholder="Tempel tautan (https://...)"
-                        className="w-full pl-9 pr-3 py-2 bg-slate-900/60 border border-slate-800/80 rounded-xl text-xs text-slate-200 placeholder:text-slate-600 focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/30 outline-none transition-all"
-                      />
-                    </div>
-                    {links.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveLink(index)}
-                        className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg border border-transparent hover:border-red-500/20 transition-all shrink-0 align-middle"
-                        title="Hapus tautan ini"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-                
-                <button
-                  type="button"
-                  onClick={handleAddLink}
-                  className="w-full flex items-center justify-center gap-1.5 py-2 border border-dashed border-slate-800 text-slate-500 hover:border-indigo-500/60 hover:text-indigo-400 transition-all text-[11px] font-semibold rounded-xl"
-                >
-                  <Plus size={14} />
-                  Tambah Tautan Kolom
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <textarea
-                  rows={6}
-                  value={bulkInput}
-                  onChange={(e) => setBulkInput(e.target.value)}
-                  placeholder="Paste URL yang banyak di sini sekaligus (pisahkan per baris)...&#10;Contoh:&#10;https://webtoons.com/chapter-one&#10;https://manga-xyz.com/chapter-two"
-                  className="w-full px-3 py-2 bg-slate-900/60 border border-slate-800/80 rounded-xl text-xs text-slate-200 placeholder:text-slate-600 focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/30 outline-none transition-all font-mono resize-none leading-relaxed"
-                />
-                <p className="text-[10px] text-slate-500 leading-normal">
-                  Tips: Pemisah otomatis mendeteksi baris baru, tanda koma, atau koma titik.
-                </p>
-              </div>
-            )}
-
-            {/* Fetch Master Buttons */}
-            <button
-              onClick={scrapeImages}
-              disabled={isLoading}
-              className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white py-3 rounded-xl text-xs font-bold shadow-md hover:from-indigo-500 hover:to-violet-500 active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-3 disabled:opacity-50 disabled:pointer-events-none font-display uppercase tracking-wide cursor-pointer"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="animate-spin text-white" size={16} />
-                  <span>Proses Ekstraksi...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles size={16} className="text-white animate-pulse" />
-                  <span>Ekstrak Semua Gambar</span>
-                </>
-              )}
-            </button>
-
-          </div>
-
-          {/* Card: Sequence & Naming Adjuster */}
-          <div className="glass-panel p-6 rounded-2xl border border-slate-900/60 shadow-xl space-y-4">
-            
-            <div className="flex items-center gap-2.5 border-b border-slate-900 pb-3">
-              <Sliders className="text-indigo-400" size={18} />
-              <h2 className="font-display text-sm font-bold tracking-wide uppercase text-slate-200">
-                Pemberian Nama & Format
-              </h2>
+      <div className="flex flex-1 gap-8 overflow-hidden flex-col lg:flex-row">
+        {/* Left Side: Input Controls (Sidebar) */}
+        <aside className="w-full lg:w-80 flex flex-col gap-6">
+          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <div className="flex items-center gap-2 mb-4">
+              <Download className="text-indigo-600" size={18} />
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Filename Settings</label>
             </div>
             
-            <div className="space-y-4 text-xs">
+            <div className="space-y-4">
               <div>
-                <label className="block text-[11px] font-bold text-slate-400 mb-1.5 uppercase tracking-wider">Nama Dasar File (Base Name)</label>
+                <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Base Filename</label>
                 <input
                   type="text"
                   value={baseFileName}
                   onChange={(e) => setBaseFileName(e.target.value)}
-                  placeholder="misal: image, manga_chap"
-                  className="w-full px-4.5 py-2.5 bg-slate-900/60 border border-slate-800/80 rounded-xl text-xs text-white focus:border-indigo-500/80 outline-none transition-all"
+                  placeholder="e.g. image"
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-600 outline-none transition-all"
                 />
-                <div className="flex items-center gap-1.5 mt-2 bg-slate-900/30 p-2 rounded-lg border border-slate-900/50">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase font-mono bg-slate-950 px-1 py-0.5 rounded">Preview:</span>
-                  <span className="text-[10px] text-indigo-400 font-mono tracking-wider">{baseFileName}_001.jpg, {baseFileName}_002.png</span>
+                <p className="text-[9px] text-slate-400 mt-1">Format Nama File: {baseFileName}_001.jpg, {baseFileName}_002.jpg, dst.</p>
+              </div>
+
+              <div className="pt-2 border-t border-slate-100">
+                <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Jeda Antar Unduhan (Detik)</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="5"
+                    step="0.5"
+                    value={downloadDelay / 1000}
+                    onChange={(e) => setDownloadDelay(parseFloat(e.target.value) * 1000)}
+                    className="flex-1 h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                  />
+                  <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md min-w-[44px] text-center">
+                    {downloadDelay / 1000}s
+                  </span>
                 </div>
-              </div>
-
-              {/* Automatic Filter check box */}
-              <div className="flex items-center gap-2.5 bg-slate-900/30 p-3 rounded-xl border border-slate-900">
-                <input
-                  type="checkbox"
-                  id="hideTiny"
-                  checked={hideTinyImages}
-                  onChange={(e) => setHideTinyImages(e.target.checked)}
-                  className="accent-indigo-500 w-4 h-4 cursor-pointer"
-                />
-                <label htmlFor="hideTiny" className="text-xs font-semibold text-slate-300 cursor-pointer select-none">
-                  Sembunyikan ikon / tracker kecil (&lt; 60px)
-                </label>
+                <p className="text-[9px] text-slate-400 mt-1.5 leading-relaxed">
+                  Menjaga unduhan tetap <span className="font-semibold text-slate-600">satu per satu</span> sesuai urutan & memberikan waktu bagi sistem operasi untuk merekam file ke disk sebelum file berikutnya diproses.
+                </p>
               </div>
             </div>
+          </section>
 
-          </div>
-
-          {/* Range Selection Card */}
-          <div className="glass-panel p-6 rounded-2xl border border-slate-900/60 shadow-xl space-y-4">
-            
-            <div className="flex items-center gap-2.5 border-b border-slate-900 pb-3">
-              <Layers className="text-indigo-400" size={18} />
-              <h2 className="font-display text-sm font-bold tracking-wide uppercase text-slate-200">
-                Seleksi Sekaligus (Range)
-              </h2>
+          <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <div className="flex items-center gap-2 mb-4">
+              <Globe className="text-indigo-600" size={18} />
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">Website Links</label>
             </div>
-
-            <p className="text-[11px] text-slate-400 leading-normal">
-              Pilih atau batalkan pilihan urutan gambar berskala luas dengan instan:
-            </p>
-
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 mb-1">Dari Urutan (#)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={images.length || 1}
-                  value={rangeStart}
-                  onChange={(e) => setRangeStart(parseInt(e.target.value) || 1)}
-                  className="w-full px-3 py-1.5 bg-slate-900/60 border border-slate-800 rounded-lg text-slate-200 focus:border-indigo-500 outline-none transition-all font-mono"
-                />
-              </div>
+            <div className="space-y-3">
+              {links.map((link, index) => (
+                <div key={index} className="flex gap-2 group">
+                  <div className="relative flex-1">
+                    <input
+                      type="url"
+                      value={link}
+                      onChange={(e) => handleLinkChange(index, e.target.value)}
+                      placeholder="Paste link here..."
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-600 outline-none transition-all"
+                    />
+                  </div>
+                  {links.length > 1 && (
+                    <button
+                      onClick={() => handleRemoveLink(index)}
+                      className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all rounded-lg"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
+              ))}
               
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 mb-1">Sampai Urutan (#)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={images.length || 1}
-                  value={rangeEnd}
-                  onChange={(e) => setRangeEnd(parseInt(e.target.value) || 1)}
-                  className="w-full px-3 py-1.5 bg-slate-900/60 border border-slate-800 rounded-lg text-slate-200 focus:border-indigo-500 outline-none transition-all font-mono"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-xs pt-1">
               <button
-                type="button"
-                onClick={() => applyRangeSelection(true)}
-                disabled={images.length === 0}
-                className="py-2 bg-indigo-600/20 text-indigo-200 border border-indigo-500/30 rounded-xl font-bold hover:bg-indigo-600/35 transition-all text-[11px] disabled:opacity-20 cursor-pointer"
+                onClick={handleAddLink}
+                className="w-full flex items-center justify-center gap-2 py-2 border border-dashed border-slate-200 rounded-xl text-slate-400 hover:border-indigo-600 hover:text-indigo-600 transition-all text-xs font-medium"
               >
-                Pilih Range
+                <Plus size={16} />
+                Add Link
               </button>
+
               <button
-                type="button"
-                onClick={() => applyRangeSelection(false)}
-                disabled={images.length === 0}
-                className="py-2 bg-slate-800 text-slate-300 border border-slate-700/50 rounded-xl font-bold hover:bg-slate-750 transition-all text-[11px] disabled:opacity-20 cursor-pointer"
+                onClick={scrapeImages}
+                disabled={isLoading}
+                className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold shadow-sm hover:bg-indigo-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-2 disabled:opacity-50"
               >
-                Batal Range
+                {isLoading ? <Loader2 className="animate-spin" size={18} /> : <ImageIcon size={18} />}
+                {isLoading ? 'Fetching...' : 'Fetch All Images'}
               </button>
             </div>
+          </section>
 
-          </div>
-
-          {/* Action Alerts and Troubleshooting */}
+          {/* Notifications */}
           <AnimatePresence>
             {error && (
               <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="bg-red-950/40 border border-red-500/30 p-4 rounded-xl flex flex-col gap-3 text-red-200"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="bg-red-50 p-4 rounded-xl flex flex-col gap-2 border border-red-100"
               >
-                <div className="flex items-start gap-2.5 text-xs">
-                  <AlertCircle className="text-red-400 shrink-0 mt-0.5 animate-bounce" size={16} />
-                  <p className="leading-relaxed font-medium">{error}</p>
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={16} />
+                  <p className="text-xs text-red-800">{error}</p>
                 </div>
-                <div className="bg-black/30 p-2.5 rounded-lg border border-red-500/10">
-                  <p className="text-[10px] text-red-300 leading-relaxed">
-                    <span className="font-bold">SOLUSI:</span> Sebagian website memblokir bot eksternal. Silakan salin URL dari website mirror, wadah komik alteratif atau link tautan terdesentralisasi lainnya.
+                <div className="mt-1 p-2 bg-white/50 rounded-lg border border-red-200">
+                  <p className="text-[10px] text-red-600 font-medium">
+                    <span className="font-bold">TIP:</span> Jika gambar tidak muncul lengkap, web tersebut mungkin memiliki proteksi bot yang kuat. Silakan coba gunakan link dari <span className="font-bold underline">website mirror/alternatif lainnya</span>.
                   </p>
                 </div>
               </motion.div>
             )}
-            
             {success && (
               <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="bg-emerald-950/40 border border-emerald-500/30 p-4 rounded-xl flex items-start gap-2.5 text-emerald-200 text-xs"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="bg-green-50 p-4 rounded-xl flex items-start gap-3 border border-green-100"
               >
-                <CheckCircle2 className="text-emerald-400 shrink-0 mt-0.5" size={16} />
-                <p className="font-medium leading-relaxed">{success}</p>
+                <CheckCircle2 className="text-green-500 shrink-0 mt-0.5" size={16} />
+                <p className="text-xs text-green-800">{success}</p>
               </motion.div>
             )}
           </AnimatePresence>
-
         </aside>
 
-        {/* Right Side: Active Image Library canvas */}
-        <main 
-          ref={libraryRef}
-          className="flex-1 glass-panel rounded-2xl border border-slate-900/60 flex flex-col overflow-hidden shadow-2xl relative min-h-[500px]"
-        >
-          
-          {/* Library Control Bar */}
-          <div className="p-4 md:p-6 border-b border-slate-900 bg-slate-950/50 backdrop-blur-md flex flex-col sm:flex-row justify-between items-center gap-4">
-            
-            {/* Left label and range check details */}
-            <div className="w-full sm:w-auto">
-              <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                <ImageIcon size={16} className="text-indigo-400" />
-                Daftar Galeri Scraping
-                {images.length > 0 && (
-                  <span className="text-[11px] font-normal text-slate-400 px-2 py-0.5 bg-slate-900 rounded-full border border-slate-800">
-                    {filteredImages.length} ditemukan • {filteredImages.filter(i => i.selected).length} dipilih
-                  </span>
-                )}
-              </h3>
-            </div>
-
-            {/* Middle Live Filter input */}
-            <div className="relative w-full sm:w-60">
-              <span className="absolute inset-y-0 left-3 flex items-center text-slate-500">
-                <Search size={14} />
-              </span>
-              <input
-                type="text"
-                placeholder="Cari kata kunci URL..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 placeholder:text-slate-500 focus:border-indigo-500 outline-none transition-all"
-              />
-            </div>
-
-            {/* Quick selectors for layout columns / select tools */}
-            <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-              
-              {/* Grid Sizer Selection */}
-              <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setGridSize('sm')}
-                  title="Grid Kecil (Thumbnails Banyak)"
-                  className={`p-1.5 rounded transition-all ${
-                    gridSize === 'sm' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-                  }`}
+        {/* Main Content: Image Grid */}
+        <main className="flex-1 bg-white rounded-2xl border border-slate-200 flex flex-col overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+            <span className="text-sm font-medium text-slate-700">
+              {images.length > 0 ? (
+                <>
+                  {images.length} Images Found 
+                  <span className="text-slate-400 font-normal ml-2">({images.filter(i => i.selected).length} selected)</span>
+                </>
+              ) : (
+                'Image Library'
+              )}
+            </span>
+            {images.length > 0 && (
+              <div className="flex gap-2">
+                <button 
+                  onClick={selectAll}
+                  className="text-xs font-semibold text-indigo-600 px-2 py-1 hover:bg-indigo-50 rounded transition-colors"
                 >
-                  <Grid size={12} className="opacity-75" />
+                  Select All
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setGridSize('md')}
-                  title="Grid Sedang"
-                  className={`p-1.5 rounded transition-all ${
-                    gridSize === 'md' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-                  }`}
+                <button 
+                  onClick={selectNone}
+                  className="text-xs font-semibold text-slate-500 px-2 py-1 hover:bg-slate-100 rounded transition-colors"
                 >
-                  <Grid size={14} />
+                  Deselect All
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setGridSize('lg')}
-                  title="Grid Besar (Detail Jelas)"
-                  className={`p-1.5 rounded transition-all ${
-                    gridSize === 'lg' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-                  }`}
+                <button 
+                  onClick={clearAll}
+                  className="text-xs font-semibold text-red-500 px-2 py-1 hover:bg-red-50 rounded transition-colors"
                 >
-                  <Grid size={16} strokeWidth={2.5} />
+                  Clear Results
                 </button>
               </div>
-
-              {images.length > 0 && (
-                <div className="flex gap-1.5 text-[11px] font-bold">
-                  <button 
-                    onClick={selectAll}
-                    className="text-indigo-400 px-2 py-1 hover:bg-indigo-500/10 rounded-lg border border-transparent hover:border-indigo-500/20 transition-all cursor-pointer"
-                  >
-                    Semua
-                  </button>
-                  <button 
-                    onClick={selectNone}
-                    className="text-slate-400 px-2 py-1 hover:bg-slate-800 rounded-lg border border-transparent hover:border-slate-700/50 transition-all cursor-pointer"
-                  >
-                    Kosongkan
-                  </button>
-                  <button 
-                    onClick={clearAll}
-                    className="text-red-400 px-2 py-1 hover:bg-red-500/10 rounded-lg border border-transparent hover:border-red-500/20 transition-all cursor-pointer"
-                  >
-                    Reset
-                  </button>
-                </div>
-              )}
-
-            </div>
-
+            )}
           </div>
 
-          {/* Grid Canvas Frame */}
-          <div className="flex-1 p-6 overflow-y-auto min-h-[450px] bg-slate-950/20">
+          <div className="flex-1 p-6 overflow-y-auto min-h-[400px]">
             {images.length === 0 ? (
-              <div className="h-full min-h-[350px] flex flex-col items-center justify-center text-center">
-                <motion.div 
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="flex flex-col items-center max-w-sm"
-                >
-                  <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mb-4 text-slate-500">
-                    <ImageIcon size={32} />
+              <div className="h-full flex flex-col items-center justify-center text-center">
+                <div className="opacity-40 flex flex-col items-center">
+                  <ImageIcon size={48} className="text-slate-300 mb-4" />
+                  <h3 className="font-semibold text-slate-900">Your library is empty</h3>
+                  <p className="text-xs text-slate-500 mt-1 max-w-xs transition-opacity">Paste some links to populate this space with images.</p>
+                </div>
+                
+                <div className="mt-8 p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 max-w-sm">
+                  <div className="flex items-center gap-2 mb-2 text-indigo-700">
+                    <AlertCircle size={14} />
+                    <span className="text-[11px] font-bold uppercase tracking-wider">Troubleshooting Tip</span>
                   </div>
-                  <h3 className="font-display font-bold text-slate-200 text-base">Galeri Unduhan Kosong</h3>
-                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                    Tempel tautan website manga, manhwa, dlsb di panel kiri untuk menarik semua lembar gambar berkualitas asli.
+                  <p className="text-[11px] text-indigo-600 leading-relaxed text-left">
+                    Jika gambar tidak lengkap atau tidak muncul, website tersebut mungkin memblokir sistem kami. <strong>Solusi:</strong> Salin link dari website manhwa/manga alternatif lain (mirror) untuk chapter yang sama.
                   </p>
-                  
-                  <div className="mt-8 p-4 bg-indigo-950/20 rounded-2xl border border-indigo-500/15 text-left">
-                    <div className="flex items-center gap-2 mb-1.5 text-indigo-400">
-                      <Info size={14} />
-                      <span className="text-[10px] font-bold uppercase tracking-wider">Troubleshooting Penting</span>
-                    </div>
-                    <p className="text-[11px] text-indigo-300 leading-relaxed">
-                      Jika hasil pencarian nihil, website tersebut kemungkinan menggunakan struktur enkripsi cloud flare. Anda cukup mencari tautan dari <strong>website alternatif / penyedia mirror lain</strong>.
-                    </p>
-                  </div>
-                </motion.div>
-              </div>
-            ) : filteredImages.length === 0 ? (
-              <div className="h-full min-h-[350px] flex flex-col items-center justify-center text-center">
-                <p className="text-xs text-slate-500 bg-slate-905 p-4 rounded-xl border border-slate-900 max-w-xs">
-                  Tidak ada gambar yang cocok dengan kata pencarian kunci atau filter filter aktif Anda saat ini.
-                </p>
+                </div>
               </div>
             ) : (
-              <div className={`grid gap-4 content-start transition-all duration-300 ${
-                gridSize === 'sm' 
-                  ? 'grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10' 
-                  : gridSize === 'md' 
-                    ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5' 
-                    : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3'
-              }`}>
-                {filteredImages.map((img, idx) => (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 content-start">
+                {images.map((img) => (
                   <motion.div
                     key={img.id}
                     layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`relative aspect-square rounded-2xl overflow-hidden group border-2 transition-all cursor-pointer ${
-                      img.selected 
-                        ? 'border-indigo-500 ring-4 ring-indigo-500/10 shadow-lg shadow-indigo-950/50' 
-                        : 'border-slate-900 bg-slate-900/40 hover:border-slate-800'
+                    className={`relative aspect-square rounded-xl overflow-hidden group border-2 transition-all cursor-pointer ${
+                      img.selected ? 'border-indigo-500' : 'border-transparent hover:border-slate-300'
                     }`}
                     onClick={() => toggleImageSelection(img.id)}
                   >
-                    
-                    {/* Index Sequence Badge */}
-                    <div className="absolute top-2 left-2 z-10 text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-slate-950/80 backdrop-blur-sm text-slate-300 border border-slate-800 select-none">
-                      #{idx + 1}
-                    </div>
-
-                    {/* Selection Toggle Checkbox Indicator */}
-                    <div className={`absolute top-2 right-2 z-10 w-5 h-5 rounded-md flex items-center justify-center transition-colors border ${
+                    {/* Selection Indicator */}
+                    <div className={`absolute top-2 right-2 z-10 w-5 h-5 rounded flex items-center justify-center transition-colors border ${
                       img.selected 
-                        ? 'bg-indigo-500 border-indigo-500 shadow' 
-                        : 'bg-slate-950/60 border-slate-700/80 backdrop-blur-sm group-hover:border-slate-400'
+                        ? 'bg-indigo-500 border-indigo-500' 
+                        : 'bg-white/80 border-slate-300 backdrop-blur-sm'
                     }`}>
                       {img.selected && <Check size={12} className="text-white" strokeWidth={3} />}
                     </div>
 
-                    {/* Full Size Detail Click Overlay Trigger */}
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedPreviewImage(img);
-                      }}
-                      className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity z-5 flex items-center justify-center"
-                      title="Klik untuk memperbesar / Preview"
-                    >
-                      <div className="w-8 h-8 rounded-full bg-slate-950/90 flex items-center justify-center border border-white/10 text-white">
-                        <Eye size={12} />
+                    {/* Real-time Sequential Download Progress Log */}
+                    {downloadStates[img.id] && downloadStates[img.id] !== 'idle' && (
+                      <div className="absolute inset-0 bg-slate-950/75 backdrop-blur-[1px] flex flex-col items-center justify-center p-2 text-center text-white z-20 animate-fade-in">
+                        {downloadStates[img.id] === 'fetching' && (
+                          <>
+                            <Loader2 size={22} className="text-amber-400 animate-spin mb-2" />
+                            <span className="text-[10px] font-semibold text-amber-200">Mengunduh...</span>
+                            <span className="text-[8px] text-slate-400 mt-0.5">Mengambil data</span>
+                          </>
+                        )}
+                        {downloadStates[img.id] === 'saving' && (
+                          <>
+                            <Loader2 size={22} className="text-indigo-400 animate-spin mb-2" />
+                            <span className="text-[10px] font-semibold text-indigo-300">Menyimpan...</span>
+                            <span className="text-[8px] text-slate-400 mt-0.5">Merekam ke disk</span>
+                          </>
+                        )}
+                        {downloadStates[img.id] === 'success' && (
+                          <>
+                            <CheckCircle2 size={22} className="text-emerald-400 mb-2" />
+                            <span className="text-[10px] font-semibold text-emerald-300">Selesai</span>
+                            <span className="text-[8px] text-slate-500 mt-0.5">Sesuai Urutan</span>
+                          </>
+                        )}
+                        {downloadStates[img.id] === 'failed' && (
+                          <>
+                            <AlertCircle size={22} className="text-red-400 mb-2" />
+                            <span className="text-[10px] font-semibold text-red-300">Gagal</span>
+                            <span className="text-[8px] text-slate-500 mt-0.5">Gagal mengambil</span>
+                          </>
+                        )}
                       </div>
-                    </button>
+                    )}
 
-                    {/* Visual Media Engine */}
                     <img 
                       src={img.url} 
                       alt=""
-                      className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                      className="w-full h-full object-cover"
                       referrerPolicy="no-referrer"
-                      onLoad={(e) => handleImageLoad(img.id, e)}
                       onError={(e) => {
                         const target = e.target as HTMLImageElement;
-                        // Trigger fallback via local API proxy
+                        // If direct load fails (common with strict hotlink protection), try the proxy as a fallback
                         if (!target.src.includes('/api/proxy-image')) {
-                          console.log('Hotlink bypass applied to:', img.url);
+                          console.log('Direct load failed, trying proxy for:', img.url);
                           target.src = `/api/proxy-image?url=${encodeURIComponent(img.url)}&referer=${encodeURIComponent(img.sourceUrl)}`;
                         } else {
-                          // Double bypass fail, display action fallback
+                          // If proxy also fails, show the fallback UI
                           target.style.display = 'none';
                           const parent = target.parentElement;
                           if (parent) {
-                            parent.classList.add('bg-slate-900', 'flex', 'flex-col', 'items-center', 'justify-center', 'p-3', 'text-center');
+                            parent.classList.add('bg-slate-100', 'flex', 'flex-col', 'items-center', 'justify-center', 'p-2', 'gap-1');
                             parent.innerHTML = `
-                              <div class="text-[9px] text-red-400 font-bold uppercase tracking-tight mb-1">Proteksi Ketat</div>
-                              <a href="${img.url}" target="_blank" rel="noreferrer" class="text-[9px] bg-slate-950 border border-slate-850 px-2 py-1 rounded-lg text-indigo-400 font-bold hover:bg-slate-900">Link Asli ↗</a>
+                              <div class="text-[10px] text-slate-500 font-bold uppercase tracking-tight">Access Blocked</div>
+                              <a href="${img.url}" target="_blank" rel="noreferrer" class="text-[9px] bg-white border border-slate-200 px-2 py-1 rounded shadow-sm hover:bg-slate-50 text-indigo-600 font-medium">View Original</a>
                             `;
                           }
                         }
                       }}
                     />
 
-                    {/* Meta bar detail inside card on hover */}
-                    <div className="absolute bottom-0 left-0 right-0 bg-slate-950/90 border-t border-slate-900 text-white text-[9px] p-2 opacity-0 group-hover:opacity-100 transition-opacity flex justify-between items-center backdrop-blur-md z-10">
-                      <span className="truncate max-w-[65%] font-mono text-slate-400">{new URL(img.sourceUrl).hostname}</span>
-                      <div className="flex items-center gap-1.5">
-                        {img.width && img.height && (
-                          <span className="text-[8px] bg-slate-900 px-1 py-0.5 rounded text-slate-400 font-mono">
-                            {img.width}x{img.height}
-                          </span>
-                        )}
-                        <a 
-                          href={img.url} 
-                          target="_blank" 
-                          rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="hover:text-indigo-400 text-slate-300"
-                        >
-                          <ExternalLink size={9} />
-                        </a>
-                      </div>
+                    {/* Meta info on hover */}
+                    <div className="absolute bottom-0 left-0 right-0 bg-black/40 text-white text-[9px] p-1.5 opacity-0 group-hover:opacity-100 transition-opacity flex justify-between items-center backdrop-blur-[2px]">
+                      <span className="truncate max-w-[70%]">{new URL(img.sourceUrl).hostname}</span>
+                      <a 
+                        href={img.url} 
+                        target="_blank" 
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="hover:text-indigo-300"
+                      >
+                        <ExternalLink size={10} />
+                      </a>
                     </div>
-
                   </motion.div>
                 ))}
               </div>
             )}
           </div>
 
-          {/* Persistent Floating Library Action Panel */}
-          <div className="p-4 md:p-6 border-t border-slate-900 bg-slate-950/80 backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-4">
+          {/* Footer Download Action */}
+          <div className="p-4 sm:p-6 border-t border-slate-100 bg-white flex items-center justify-between">
             <div>
-              <p className="text-xs sm:text-sm font-semibold text-slate-200">
-                Ada {filteredImages.filter(i => i.selected).length} file gambar dipilih
-              </p>
-              <p className="text-[10px] sm:text-xs text-slate-500 font-medium">
-                Sistem akan menyusun nama secara berurutan saat diunduh.
+              <p className="text-xs sm:text-sm font-semibold">{images.filter(i => i.selected).length} files</p>
+              <p className="text-[10px] sm:text-xs text-slate-400">
+                Ready for Sequential Download
               </p>
             </div>
-            
             <button 
               onClick={downloadAll}
-              disabled={downloading || filteredImages.filter(i => i.selected).length === 0}
-              className="w-full sm:w-auto flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white px-8 py-3 rounded-xl text-xs font-bold transition-all disabled:opacity-20 disabled:pointer-events-none uppercase tracking-wide cursor-pointer font-display shadow-lg shadow-emerald-900/20"
+              disabled={downloading || images.length === 0}
+              className="flex items-center gap-2 bg-slate-900 text-white px-4 sm:px-8 py-2 sm:py-3 rounded-lg sm:rounded-xl text-sm font-bold hover:scale-[1.02] transition-transform disabled:opacity-30 disabled:hover:scale-100 shadow-lg shadow-slate-200"
             >
               {downloading ? (
                 <>
-                  <Loader2 className="animate-spin text-white" size={16} />
-                  <span>Sedang Mengunduh...</span>
+                  <Loader2 className="animate-spin" size={16} />
+                  <span className="hidden sm:inline">Processing...</span>
+                  <span className="sm:hidden">...</span>
                 </>
               ) : (
                 <>
-                  <FileDown size={16} className="text-white" />
-                  <span>Download Sekaligus</span>
+                  <Download size={16} />
+                  <span>Download</span>
                 </>
               )}
             </button>
           </div>
-
         </main>
-      </main>
-
-      {/* Lightbox / Preview Zoom Modal */}
-      <AnimatePresence>
-        {selectedPreviewImage && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-lg flex items-center justify-center p-4"
-            onClick={() => setSelectedPreviewImage(null)}
-          >
-            <motion.div
-              initial={{ scale: 0.95 }}
-              animate={{ scale: 1 }}
-              exit={{ scale: 0.95 }}
-              className="relative max-w-4xl w-full bg-slate-900 rounded-3xl border border-slate-800 overflow-hidden shadow-2xl flex flex-col md:flex-row"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Close Button */}
-              <button 
-                type="button"
-                onClick={() => setSelectedPreviewImage(null)}
-                className="absolute top-4 right-4 z-10 w-8 h-8 rounded-full bg-slate-950/80 backdrop-blur border border-white/10 text-white flex items-center justify-center hover:bg-slate-900 transition-colors cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-
-              {/* Left Column: Image Media */}
-              <div className="flex-1 bg-black/50 p-4 flex items-center justify-center min-h-[300px] md:min-h-[450px]">
-                <img 
-                  src={selectedPreviewImage.url} 
-                  alt="" 
-                  className="max-h-[80vh] md:max-h-[60vh] object-contain rounded-lg"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
-
-              {/* Right Column: Information Panel */}
-              <div className="w-full md:w-80 p-6 flex flex-col justify-between border-t md:border-t-0 md:border-l border-slate-800 bg-slate-950/50">
-                <div className="space-y-4">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-full border border-indigo-500/20">
-                    Preview Detail
-                  </span>
-                  
-                  <div className="space-y-1">
-                    <h4 className="text-xs text-slate-400 uppercase font-bold tracking-wider">Host URL Asal</h4>
-                    <p className="text-xs font-mono text-white break-all bg-slate-900 p-2 rounded-lg border border-slate-800/80">
-                      {new URL(selectedPreviewImage.sourceUrl).hostname}
-                    </p>
-                  </div>
-
-                  <div className="space-y-1">
-                    <h4 className="text-xs text-slate-400 uppercase font-bold tracking-wider">URL Gambar Lengkap</h4>
-                    <p className="text-[11px] font-mono text-indigo-300 break-all bg-slate-900 p-2 rounded-lg border border-slate-800/80 select-all max-h-24 overflow-y-auto">
-                      {selectedPreviewImage.url}
-                    </p>
-                  </div>
-
-                  {selectedPreviewImage.width && selectedPreviewImage.height && (
-                    <div className="grid grid-cols-2 gap-2 text-center">
-                      <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
-                        <span className="block text-[10px] text-slate-500 uppercase font-extrabold">Lebar</span>
-                        <span className="text-xs font-bold text-white font-mono">{selectedPreviewImage.width} px</span>
-                      </div>
-                      <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
-                        <span className="block text-[10px] text-slate-500 uppercase font-extrabold">Tinggi</span>
-                        <span className="text-xs font-bold text-white font-mono">{selectedPreviewImage.height} px</span>
-                      </div>
-                    </div>
-                  )}
-
-                </div>
-
-                <div className="pt-6 border-t border-slate-850 flex gap-2.5">
-                  <a 
-                    href={selectedPreviewImage.url} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-slate-800 hover:bg-slate-750 text-white rounded-xl text-xs font-bold transition-all border border-slate-705"
-                  >
-                    <ExternalLink size={13} />
-                    Buka Tab Asli
-                  </a>
-                </div>
-
-              </div>
-
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Footer copyright */}
-      <footer className="border-t border-slate-900 py-6 px-4 md:px-8 mt-auto text-center text-slate-600 text-xs">
-        <p>© 2026 Aniimage Downloader. Didesain secara profesional untuk kenyamanan ekstraksi media berkualitas tinggi.</p>
-      </footer>
+      </div>
     </div>
   );
 }
